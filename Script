@@ -1,0 +1,184 @@
+
+#!/bin/bash
+
+
+### START ###
+
+# Start inside the 'trio_analyses' folder, inside the user folder ('BCG2026_Lazzaroni_L')
+
+
+### IMPORTING COMMON FILES ###
+
+# Required files:
+# 1. Sequencing output (exome) (single-end or paired-end)
+# 2. Reference genome (indexed and Bowtie2-indexed) (.fa or .fasta (.fai and .bt2))
+# 3. Target regions (.bed)
+# 4. Samples file (.txt)
+# 5. (multiqc_config.yaml)
+
+## These files must be stored in the common parent folder 'trio_analyses': ##
+echo "Creating links to the common files"
+
+# 2. Reference genome (indexed and Bowtie2-indexed) (.fa or .fasta (.fai and .bt2))
+ln -s /home/BCG2026_exam/chr20.* .
+
+# 3. Target regions (.bed)
+ln -s /home/BCG2026_exam/chr20_ILMN_Exome_2.0_Plus_Panel.hg38_padded.bed target_regions.bed
+
+# 4. Samples file (.txt)
+echo $'child\nfather\nmother' > samples.txt
+
+
+### START THE ITERATION ###
+
+while read SEQ_MODE TRIO_NUM CHILD_ID FATHER_ID MOTHER_ID INHERITANCE NOTES; do
+
+
+    ### NEW DIRECTORY AND IMPORTING TRIO-SPECIFIC FILES ###
+
+    echo "Creating a new directory and importing the trio-specific files"
+
+    mkdir -p "${TRIO_NUM}"
+
+    ## These files must be stored in the specific trio folder: ##
+    echo "Creating links to the trio-specific files"
+
+    cd ${TRIO_NUM}
+
+    # 1. Sequencing output (exome) (single-end or paired-end)
+    ln -s /home/BCG2026_exam/BCG2026_Lazzaroni_L/${TRIO_NUM}/* .
+    ls
+
+    # read -p "Everything's good?"
+
+
+    ### PRE-ALIGNMENT QUALITY CONTROL ###
+
+    echo "Pre-alignement quality control"
+
+    # FastQC
+    fastqc *.fq.gz
+    
+    
+    ### ALIGN TO THE REFERENCE GENOME ###
+
+    echo "Alignment"
+
+    if [ "$SEQ_MODE" == 'SE' ]; then
+        bowtie2 -x ../chr20 -U ${CHILD_ID}.fq.gz --rg-id "child" --rg "SM:child" | samtools view -Sb | samtools sort -o child.bam &
+        bowtie2 -x ../chr20 -U ${FATHER_ID}.fq.gz --rg-id "father" --rg "SM:father" | samtools view -Sb | samtools sort -o father.bam &
+        bowtie2 -x ../chr20 -U ${MOTHER_ID}.fq.gz --rg-id "mother" --rg "SM:mother" | samtools view -Sb | samtools sort -o mother.bam &
+        wait
+    elif [ "$SEQ_MODE" == 'PE' ]; then
+        bowtie2 -x ../chr20 -1 ${CHILD_ID}.targets_R1.fq.gz -2 ${CHILD_ID}.targets_R2.fq.gz --rg-id "child" --rg "SM:child" | samtools view -Sb | samtools sort -o child.bam &
+        bowtie2 -x ../chr20 -1 ${FATHER_ID}.targets_R1.fq.gz -2 ${FATHER_ID}.targets_R2.fq.gz --rg-id "father" --rg "SM:father" | samtools view -Sb | samtools sort -o father.bam &
+        bowtie2 -x ../chr20 -1 ${MOTHER_ID}.targets_R1.fq.gz -2 ${MOTHER_ID}.targets_R2.fq.gz --rg-id "mother" --rg "SM:mother" | samtools view -Sb | samtools sort -o mother.bam &
+        wait
+    fi
+
+    # Index
+    samtools index child.bam
+    samtools index father.bam
+    samtools index mother.bam
+
+
+    ### POST-ALIGNMENT QUALITY CONTROL ###
+
+    echo "Post-alignment quality control"
+
+    # Qualimap
+    qualimap bamqc -bam child.bam --feature-file ../target_regions.bed --outdir child &
+    qualimap bamqc -bam father.bam --feature-file ../target_regions.bed --outdir father &
+    qualimap bamqc -bam mother.bam --feature-file ../target_regions.bed --outdir mother &
+    wait
+
+    # MultiQC
+    multiqc -c ../multiqc_config.yaml .
+    mv multiqc_report.html ${TRIO_NUM}_multiqc_report.html
+
+    # Download the report
+
+
+    ### VARIANT CALLING ###
+
+    echo "FreeBayes"
+
+    # FreeBayes
+    freebayes -f ../chr20.fa -m 20 -C 5 -Q 10 -q 10 --min-coverage 10 child.bam father.bam mother.bam > ${TRIO_NUM}.vcf
+
+    # Compress VCF file and allow random access
+    bgzip ${TRIO_NUM}.vcf
+
+    # Index
+    bcftools index ${TRIO_NUM}.vcf.gz
+
+    echo "BCFtools"
+
+    # BCFtools
+    if [ "$INHERITANCE" == 'AR' ]; then
+        echo "1. Recessive"
+        bcftools view -R ../target_regions.bed ${TRIO_NUM}.vcf.gz | bcftools view -S ../samples.txt | bcftools view -i 'GT[0]="AA" && GT[1]="RA" && GT[2]="RA"' | bcftools filter -i 'QUAL>20' -Ov -o ${TRIO_NUM}.cand.vcf
+    elif [ "$INHERITANCE" == 'AD_inherited' ]; then
+        if [ "$NOTES" == 'father_affected' ]; then
+            echo "2. Dominant, father affected"
+            bcftools view -R ../target_regions.bed ${TRIO_NUM}.vcf.gz | bcftools view -S ../samples.txt | bcftools view -i 'GT[0]="RA" && GT[1]="RA" && GT[2]="RR"' | bcftools filter -i 'QUAL>20' -Ov -o ${TRIO_NUM}.cand.vcf
+        elif [ "$NOTES" == 'mother_affected' ]; then
+            echo "3. Dominant, mother affected"
+            bcftools view -R ../target_regions.bed ${TRIO_NUM}.vcf.gz | bcftools view -S ../samples.txt | bcftools view -i 'GT[0]="RA" && GT[1]="RR" && GT[2]="RA"' | bcftools filter -i 'QUAL>20' -Ov -o ${TRIO_NUM}.cand.vcf
+        fi
+    elif [ "$INHERITANCE" == 'AD_denovo' ]; then
+        echo "4. Dominant, de novo"
+        bcftools view -R ../target_regions.bed ${TRIO_NUM}.vcf.gz | bcftools view -S ../samples.txt | bcftools view -i 'GT[0]="RA" && GT[1]="RR" && GT[2]="RR"' | bcftools filter -i 'QUAL>20' -Ov -o ${TRIO_NUM}.cand.vcf
+    fi
+
+    # Download the report
+
+
+    ### VEP ANALYSIS ###
+
+    echo "VEP"
+
+    vep -i ${TRIO_NUM}.cand.vcf -o ${TRIO_NUM}.VEP_annotated.vcf --vcf --cache --offline --assembly GRCh38 --dir_cache /data/vep_cache --fasta ../chr20.fa --use_given_ref --mane --pick_allele --af --af_1kg --af_gnomade --max_af --sift b --polyphen b
+    vep -i ${TRIO_NUM}.cand.vcf -o ${TRIO_NUM}.VEP_table.txt --tab --cache --offline --assembly GRCh38 --dir_cache /data/vep_cache --fasta ../chr20.fa --use_given_ref --mane --pick_allele --af --af_1kg --af_gnomade --max_af --sift b --polyphen b --fields "Location,STRAND,SYMBOL,Consequence,BIOTYPE,IMPACT,Codons,REF_ALLELE,Uploaded_variation,SIFT,PolyPhen,MAX_AF,AF,gnomADe_AF,CLIN_SIG,PHENOTYPE"
+    filter_vep -i ${TRIO_NUM}.VEP_annotated.vcf -o ${TRIO_NUM}.VEP_filtered.vcf --filter "IMPACT is HIGH and (not MAX_AF or MAX_AF < 0.0001)"
+    filter_vep -i ${TRIO_NUM}.VEP_table.txt -o ${TRIO_NUM}.VEP_filtered_table.txt --filter "IMPACT is HIGH and (not MAX_AF or MAX_AF < 0.0001)"
+
+    # Download the report
+
+
+    # COVERAGE TRACKS
+
+    echo "Coverage tracks"
+
+    bedtools genomecov -ibam father.bam -bg -trackline -trackopts 'name="father"' -max 100 > ${TRIO_NUM}_fatherCov.bg &
+    bedtools genomecov -ibam mother.bam -bg -trackline -trackopts 'name="mother"' -max 100 > ${TRIO_NUM}_motherCov.bg &
+    bedtools genomecov -ibam child.bam -bg -trackline -trackopts 'name="child"' -max 100 > ${TRIO_NUM}_childCov.bg &
+    wait
+
+    # Download the tracks
+
+
+    # UCSC CUSTOM TRACKS VIZ
+
+
+    ######
+
+
+    ### FILE EXPORT ###
+
+    echo "File export"
+
+    EXPORT_DIR="${TRIO_NUM}_export"
+    mkdir -p "$EXPORT_DIR"
+
+    cp ${TRIO_NUM}_multiqc_report.html "$EXPORT_DIR/"
+    cp ${TRIO_NUM}.cand.vcf "$EXPORT_DIR/"
+    cp ${TRIO_NUM}.VEP_annotated.vcf "$EXPORT_DIR/"
+    cp ${TRIO_NUM}.VEP_filtered.vcf "$EXPORT_DIR/"
+    cp ${TRIO_NUM}.VEP_filtered_table.txt "$EXPORT_DIR/"
+    cp *.bg "$EXPORT_DIR/"
+
+    cd ..
+
+
+done < analysis_info.txt
