@@ -4,19 +4,21 @@
 
 ### START ###
 
-# Start inside the 'trio_analyses' folder, inside the user folder ('BCG2026_Lazzaroni_L')
+# Start inside the 'trio_analyses' parent folder
+# This folder will contain all the files required for each trio analysis (aka 'common files')
+# Inside this folder, a sub-folder will be automatically created for each trio
+# The sub-folder will contain the files required for each specific trio analysis (aka 'trio-specific files')
 
 
 ### IMPORTING COMMON FILES ###
 
-# Required files:
-# 1. Sequencing output (exome) (single-end or paired-end)
-# 2. Reference genome (indexed and Bowtie2-indexed) (.fa or .fasta (.fai and .bt2))
-# 3. Target regions (.bed)
+# Common files required to perform each trio analysis, must be stored in the common parent folder 'trio_analyses':
+# 1. Raw sequencing data (exome): .fq or .fq.gz
+# 2. Reference genome (indexed and Bowtie2-indexed): .fa or .fasta (.fai and .bt2)
+# 3. Target regions: .bed
 # 4. Samples file (.txt)
 # 5. (multiqc_config.yaml)
 
-## These files must be stored in the common parent folder 'trio_analyses': ##
 echo "Creating links to the common files"
 
 # 2. Reference genome (indexed and Bowtie2-indexed) (.fa or .fasta (.fai and .bt2))
